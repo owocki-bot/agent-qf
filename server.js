@@ -224,7 +224,49 @@ async function sendETH(toAddress, amountWei) {
 // API: ROUNDS
 // ============================================================================
 
-app.post('/rounds', async (req, res) => {
+
+// ============================================================================
+// WHITELIST MIDDLEWARE
+// ============================================================================
+
+let _whitelistCache = null;
+let _whitelistCacheTime = 0;
+const WHITELIST_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+async function fetchWhitelist() {
+  const now = Date.now();
+  if (_whitelistCache && (now - _whitelistCacheTime) < WHITELIST_CACHE_TTL) {
+    return _whitelistCache;
+  }
+  try {
+    const res = await fetch('https://www.owockibot.xyz/api/whitelist');
+    const data = await res.json();
+    _whitelistCache = new Set(data.map(e => (e.address || e).toLowerCase()));
+    _whitelistCacheTime = now;
+    return _whitelistCache;
+  } catch (err) {
+    console.error('Whitelist fetch failed:', err.message);
+    if (_whitelistCache) return _whitelistCache;
+    return new Set();
+  }
+}
+
+function requireWhitelist(addressField = 'address') {
+  return async (req, res, next) => {
+    const addr = req.body?.[addressField] || req.body?.creator || req.body?.participant || req.body?.sender || req.body?.from || req.body?.address;
+    if (!addr) {
+      return res.status(400).json({ error: 'Address required' });
+    }
+    const whitelist = await fetchWhitelist();
+    if (!whitelist.has(addr.toLowerCase())) {
+      return res.status(403).json({ error: 'Invite-only. Tag @owockibot on X to request access.' });
+    }
+    next();
+  };
+}
+
+
+app.post('/rounds', requireWhitelist(), async (req, res) => {
   const { name, description, matchingPool, durationDays } = req.body;
 
   if (!name || !matchingPool) {
@@ -279,7 +321,7 @@ app.get('/rounds/:id', (req, res) => {
   res.json({ ...round, matching: calculateQFMatching(round.id) });
 });
 
-app.post('/rounds/:id/end', (req, res) => {
+app.post('/rounds/:id/end', requireWhitelist(), (req, res) => {
   const round = rounds.get(req.params.id);
   if (!round) return res.status(404).json({ error: 'Round not found' });
   if (round.status !== 'active') return res.status(400).json({ error: 'Round not active' });
@@ -291,7 +333,7 @@ app.post('/rounds/:id/end', (req, res) => {
   res.json({ success: true, round });
 });
 
-app.post('/rounds/:id/finalize', async (req, res) => {
+app.post('/rounds/:id/finalize', requireWhitelist(), async (req, res) => {
   const round = rounds.get(req.params.id);
   if (!round) return res.status(404).json({ error: 'Round not found' });
   if (round.status !== 'pending_payout') {
@@ -364,7 +406,7 @@ app.post('/rounds/:id/finalize', async (req, res) => {
 // API: PROJECTS
 // ============================================================================
 
-app.post('/projects', (req, res) => {
+app.post('/projects', requireWhitelist(), (req, res) => {
   const { name, description, address, roundId } = req.body;
 
   if (!name || !address || !roundId) {
@@ -421,7 +463,7 @@ app.get('/projects/:id', (req, res) => {
 // API: CONTRIBUTIONS
 // ============================================================================
 
-app.post('/contributions', async (req, res) => {
+app.post('/contributions', requireWhitelist(), async (req, res) => {
   const { projectId, address, amount, txHash } = req.body;
 
   if (!projectId || !address || !amount || !txHash) {
